@@ -86,8 +86,13 @@ problema es exclusivamente el passthrough USB de WSL.
 
 - El ACR122U solo lee **NFC-A**. Una tarjeta NFC-B no la detecta.
 - El UID se teclea en la ventana activa, así que esa ventana debe tener el foco.
-- Una tarjeta que se queda apoyada se ignora durante 1,5 s para no producir
-  lecturas repetidas (`REPETICION_MIN_MS`).
+- Una tarjeta que se queda apoyada se lee **una sola vez**. Para volver a leerla
+  hay que retirarla y acercarla de nuevo.
+- Con la tarjeta quieta encima, el ACR122U falla de vez en cuando una vuelta del
+  sondeo (`SCARD_W_REMOVED_CARD`) y a la siguiente vuelve a responder. Por eso
+  hacen falta 3 vueltas seguidas sin tarjeta —750 ms— para admitir una lectura
+  nueva (`AUSENCIAS_PARA_REARMAR`): sin ese margen, el parpadeo del lector se
+  confunde con haber retirado la tarjeta y se producen lecturas repetidas.
 - Sondea cada 250 ms (`PAUSA_SONDEO_MS`), así que hay un retardo de hasta esa
   cantidad entre apoyar la tarjeta y la lectura.
 - Si hay varios lectores conectados, elige el que tenga `ACR122` o `ACS` en el

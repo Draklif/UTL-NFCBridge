@@ -62,8 +62,14 @@ $SCARD_PROTOCOL_T0T1   = 3
 $SCARD_LEAVE_CARD      = 0
 $SCARD_S_SUCCESS       = 0
 
-$REPETICION_MIN_MS = 1500  # ignora la relectura de una tarjeta que quedo apoyada
-$PAUSA_SONDEO_MS   = 250   # cada cuanto se pregunta si hay tarjeta encima
+$PAUSA_SONDEO_MS = 250  # cada cuanto se pregunta si hay tarjeta encima
+
+# Cuantas vueltas seguidas sin tarjeta hacen falta para admitir una lectura
+# nueva. Con la tarjeta quieta encima, el ACR122U falla de vez en cuando una
+# vuelta suelta (devuelve SCARD_W_REMOVED_CARD y a la siguiente vuelve a
+# responder); sin este margen ese parpadeo se cuenta como tarjeta retirada y la
+# vuelve a leer. Tres vueltas son 750 ms: nadie retira y reapoya tan rapido.
+$AUSENCIAS_PARA_REARMAR = 3
 
 if (-not $SinTeclear) {
     Add-Type -AssemblyName System.Windows.Forms
@@ -98,8 +104,12 @@ Write-Host $(if ($SinTeclear) {
 })
 
 # ── Bucle de lectura ─────────────────────────────────
-$ultimoUid = ""
-$ultimoMs = 0
+# Una tarjeta que se queda apoyada se leeria en cada vuelta del sondeo; sin esto
+# la app cobraria varias veces por un solo pasajero. La marca se levanta cuando
+# se logra leer y se baja cuando la tarjeta se retira, asi que para volver a
+# leerla hay que quitarla y acercarla de nuevo.
+$tarjetaPresente = $false
+$ausenciasSeguidas = 0
 
 try {
     while ($true) {
@@ -109,10 +119,16 @@ try {
         $proto = 0
         # Sin tarjeta encima esto falla, que es la forma normal de esperar.
         if ([WinScard]::SCardConnect($ctx, $lector, $SCARD_SHARE_SHARED, $SCARD_PROTOCOL_T0T1, [ref]$card, [ref]$proto) -ne $SCARD_S_SUCCESS) {
+            $ausenciasSeguidas++
+            if ($ausenciasSeguidas -ge $AUSENCIAS_PARA_REARMAR) { $tarjetaPresente = $false }
             continue
         }
+        $ausenciasSeguidas = 0
 
         try {
+            # Es la misma tarjeta de la vuelta anterior, que sigue apoyada.
+            if ($tarjetaPresente) { continue }
+
             # FF CA 00 00 00: "dame el UID". Es el APDU estandar de PC/SC para
             # tarjetas sin contacto, el mismo que usan los lectores HID.
             $io = New-Object WinScard+IO_REQUEST
@@ -138,12 +154,9 @@ try {
             $uid = -join ($respuesta[0..($largo - 3)] | ForEach-Object { $_.ToString("X2") })
             if ($uid.Length -lt 4) { continue }
 
-            # Una tarjeta que se queda apoyada se vuelve a leer sola; sin esto la
-            # app cobraria dos veces por un solo pasajero.
-            $ahora = [Environment]::TickCount
-            if ($uid -eq $ultimoUid -and ($ahora - $ultimoMs) -lt $REPETICION_MIN_MS) { continue }
-            $ultimoUid = $uid
-            $ultimoMs = $ahora
+            # Se marca solo despues de una lectura buena: si la tarjeta esta
+            # encima pero no logro leerse, se reintenta en la proxima vuelta.
+            $tarjetaPresente = $true
 
             Write-Host "Leido: $uid"
 
