@@ -3,7 +3,7 @@
 Convierte un lector NFC **ACR122U** en un teclado: lee el UID de la tarjeta y lo
 escribe como pulsaciones en la ventana activa, terminando con Enter.
 
-Un solo archivo de PowerShell, sin nada que instalar.
+Un script de PowerShell y un `.bat` con menú para arrancarlo. Nada que instalar.
 
 ## Para qué sirve
 
@@ -20,19 +20,37 @@ de formulario, una hoja de cálculo o el Bloc de notas.
 
 ## Uso
 
-Doble clic en **`Puente.bat`**. Eso es todo: no hay que abrir la consola ni pelear
-con la política de ejecución, porque el `.bat` la esquiva solo para ese proceso
-(no cambia ninguna configuración del PC).
+Doble clic en **`Puente.bat`**. Sale un menú donde se elige todo con una tecla:
 
-**`Puente (prueba).bat`** hace lo mismo pero sin teclear: solo muestra los UID en
-pantalla. Empieza siempre por ahí — si el UID no aparece, el problema está en el
-lector y no en la app que lo recibe.
+```
+    [1]  Modo .......... TECLEAR el UID en la ventana activa
+    [2]  Enter final ... SI
+    [3]  Formato ....... MAYUSCULAS    (04A1B2C3)
 
-Desde PowerShell, si lo prefieres:
+    [I]  Iniciar el puente
+    [S]  Salir
+```
+
+Los números alternan cada opción; `I` arranca. No hay que abrir la consola ni
+pelear con la política de ejecución: el `.bat` la esquiva solo para ese proceso,
+sin cambiar ninguna configuración del PC. Si hay un `Puente.exe` al lado, lo usa
+a él en vez del `.ps1`.
+
+Empieza siempre por el **modo prueba** (`[1]`), que muestra los UID en pantalla
+sin teclearlos. Si ahí no aparece nada, el problema está en el lector y no en la
+app que lo recibe.
+
+Las otras dos opciones son para apps quisquillosas: **sin Enter final**, cuando la
+app envía el formulario sola y un Enter de más se le adelanta; y **minúsculas**,
+cuando compara el UID como texto.
+
+Desde PowerShell, si lo prefieres, son las mismas cuatro flags:
 
 ```powershell
-.\puente.ps1 -SinTeclear     # muestra los UID en consola, no teclea nada
 .\puente.ps1                 # el modo real
+.\puente.ps1 -SinTeclear     # muestra los UID en consola, no teclea nada
+.\puente.ps1 -SinEnter       # teclea el UID pero no cierra con Enter
+.\puente.ps1 -Minusculas     # teclea el UID en minusculas
 ```
 
 Con el puente corriendo, deja **enfocada** la ventana donde quieres que aparezca
@@ -57,23 +75,16 @@ función con la que Windows avisa cuando algo cambia en el lector, y despierta e
 el instante en que la tarjeta toca la antena. El retardo es el del lector, no el
 del script — y mientras espera no consume CPU.
 
-## Un .exe, si lo quieres
+## El .exe
 
-`Puente.bat` ya se abre con doble clic, así que el `.exe` no hace falta. Si de
-todos modos prefieres repartir un archivo suelto, sin el `.ps1` al lado:
+`Puente.exe` se publica en [Releases](../../releases), no en el repo: es un
+binario, no aporta nada al historial y algunos antivirus miran mal los
+ejecutables que llegan al clonar.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File construir-exe.ps1
-```
-
-Instala [ps2exe](https://github.com/MScholtes/PS2EXE) para tu usuario (sin
-administrador) y deja `Puente.exe` en la carpeta. Dos advertencias: adentro sigue
-siendo el mismo script —no compila nada, no es más rápido— y **los antivirus
-desconfían de los ejecutables de ps2exe**, porque el malware usa la misma técnica
-para esconder scripts. Si Defender lo borra, reparte el `.bat`.
-
-Por eso `Puente.exe` no está versionado: para los estudiantes, clonar el repo y
-hacer doble clic en `Puente.bat` es el camino que no falla.
+Adentro sigue siendo el mismo script, así que no es más rápido ni distinto. Sirve
+para repartir un archivo suelto a quien no vaya a clonar el repo. Si Defender lo
+pone en cuarentena, no pelees: el `.bat` con el `.ps1` al lado hace lo mismo y
+nunca da ese problema.
 
 ## Requisitos
 

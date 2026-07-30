@@ -16,14 +16,25 @@
     institucional no se pueden instalar. winscard.dll ya esta en cualquier
     Windows. Sin dependencias, sin compilar, sin administrador.
 
-    Uso:  .\puente.ps1              teclea el UID en la ventana activa
-          .\puente.ps1 -SinTeclear  solo lo muestra en consola (para probar)
+    Uso:  .\puente.ps1               teclea el UID en la ventana activa
+          .\puente.ps1 -SinTeclear   solo lo muestra en consola (para probar)
+          .\puente.ps1 -SinEnter     teclea el UID pero no cierra con Enter
+          .\puente.ps1 -Minusculas   teclea el UID en minusculas
 
-    O, para no abrir la consola a mano, doble clic en Puente.bat.
+    O, para no acordarse de nada de esto, doble clic en Puente.bat: trae un menu
+    con los mismos modos y opciones.
 #>
 
 param(
-    [switch]$SinTeclear
+    # Solo muestra los UID en pantalla, sin teclear nada. Para probar el lector.
+    [switch]$SinTeclear,
+
+    # Algunas apps procesan el campo solas y un Enter de mas les envia el
+    # formulario antes de tiempo.
+    [switch]$SinEnter,
+
+    # Por si la app compara el UID como texto y lo guarda en minusculas.
+    [switch]$Minusculas
 )
 
 $ErrorActionPreference = "Stop"
@@ -223,12 +234,15 @@ try {
         $uid = Leer-Uid -Contexto $ctx -Lector $lector
         if (-not $uid) { continue }
 
+        if ($Minusculas) { $uid = $uid.ToLower() }
+
         Write-Host "Leido: $uid"
 
         # SendKeys escribe en la ventana que tenga el foco, que es justo lo
         # que hace un lector HID. El UID es hex, no hay nada que escapar.
         if (-not $SinTeclear) {
-            [System.Windows.Forms.SendKeys]::SendWait("$uid{ENTER}")
+            $pulsaciones = if ($SinEnter) { $uid } else { "$uid{ENTER}" }
+            [System.Windows.Forms.SendKeys]::SendWait($pulsaciones)
         }
     }
 }
