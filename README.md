@@ -3,7 +3,7 @@
 Convierte un lector NFC **ACR122U** en un teclado: lee el UID de la tarjeta y lo
 escribe como pulsaciones en la ventana activa, terminando con Enter.
 
-Un script de PowerShell y un `.bat` con menú para arrancarlo. Nada que instalar.
+Un solo archivo de PowerShell, sin nada que instalar.
 
 ## Para qué sirve
 
@@ -20,84 +20,39 @@ de formulario, una hoja de cálculo o el Bloc de notas.
 
 ## Uso
 
-Doble clic en **`Puente.bat`**. Sale un menú donde se elige todo con una tecla:
+Doble clic en **`Puente.bat`**: sale un menú para elegir el modo (`1`) y arrancar
+(`I`). El `.bat` solo lanza el script —no interviene en la lectura— y esquiva la
+política de ejecución solo para ese proceso, sin cambiar nada del PC. Si hay un
+`Puente.exe` al lado, usa ese.
 
-```
-    [1]  Modo .......... TECLEAR el UID en la ventana activa
-    [2]  Enter final ... SI
-    [3]  Formato ....... MAYUSCULAS    (04A1B2C3)
-
-    [I]  Iniciar el puente
-    [S]  Salir
-```
-
-Los números alternan cada opción; `I` arranca. No hay que abrir la consola ni
-pelear con la política de ejecución: el `.bat` la esquiva solo para ese proceso,
-sin cambiar ninguna configuración del PC. Si hay un `Puente.exe` al lado, lo usa
-a él en vez del `.ps1`.
-
-Empieza siempre por el **modo prueba** (`[1]`), que muestra los UID en pantalla
-sin teclearlos. Si ahí no aparece nada, el problema está en el lector y no en la
-app que lo recibe.
-
-Las otras dos opciones son para apps quisquillosas: **sin Enter final**, cuando la
-app envía el formulario sola y un Enter de más se le adelanta; y **minúsculas**,
-cuando compara el UID como texto.
-
-Desde PowerShell, si lo prefieres, son las mismas cuatro flags:
+Desde PowerShell es lo mismo:
 
 ```powershell
-.\puente.ps1                 # el modo real
 .\puente.ps1 -SinTeclear     # muestra los UID en consola, no teclea nada
-.\puente.ps1 -SinEnter       # teclea el UID pero no cierra con Enter
-.\puente.ps1 -Minusculas     # teclea el UID en minusculas
+.\puente.ps1                 # el modo real
+```
+
+Si PowerShell bloquea el script por política de ejecución:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File puente.ps1
 ```
 
 Con el puente corriendo, deja **enfocada** la ventana donde quieres que aparezca
 el UID y acerca la tarjeta.
 
+Empieza siempre por `-SinTeclear`. Si ahí no aparece el UID, el problema está en
+el lector y no en la app que lo recibe.
+
 El UID sale en hex plano y mayúsculas (`04A1B2C3`), el mismo formato que entrega
 Web NFC en Android una vez se le quitan los dos puntos.
-
-## Una lectura por tarjeta
-
-El puente lee **una sola vez** cada vez que se acerca una tarjeta. Si se queda
-apoyada sobre el lector no vuelve a leerla: hay que retirarla y acercarla otra
-vez. Así una misma tarjeta no puede cobrar dos veces por descuido.
-
-No es un antirrebote por tiempo, sino el estado real del lector: se lee en el
-momento en que la tarjeta entra al campo, y no se vuelve a leer hasta que sale.
-
-## Cómo se teclea
-
-Con `SendInput`, la misma API por la que Windows entrega las pulsaciones de un
-teclado físico, y en modo Unicode: el carácter viaja tal cual, así que no depende
-de la distribución del teclado. En un AZERTY, mandando códigos de tecla, la `A`
-saldría como `Q`.
-
-No se usa `SendKeys` de System.Windows.Forms, aunque sea el camino habitual en
-PowerShell: por dentro se apoya en *journal hooks*, un mecanismo que Windows
-puede reinyectar entero si el enganche se interrumpe. El síntoma es el UID
-llegando repetido y entrelazado consigo mismo (`CA8C0943` → `CCCAAA88CC00…`), sin
-nada que ajustar del lado del script.
-
-## Velocidad
-
-No hay sondeo. El proceso queda dormido dentro de `SCardGetStatusChange`, la
-función con la que Windows avisa cuando algo cambia en el lector, y despierta en
-el instante en que la tarjeta toca la antena. El retardo es el del lector, no el
-del script — y mientras espera no consume CPU.
 
 ## El .exe
 
 `Puente.exe` se publica en [Releases](../../releases), no en el repo: es un
-binario, no aporta nada al historial y algunos antivirus miran mal los
-ejecutables que llegan al clonar.
-
-Adentro sigue siendo el mismo script, así que no es más rápido ni distinto. Sirve
-para repartir un archivo suelto a quien no vaya a clonar el repo. Si Defender lo
-pone en cuarentena, no pelees: el `.bat` con el `.ps1` al lado hace lo mismo y
-nunca da ese problema.
+binario que no aporta nada al historial y que algunos antivirus miran mal cuando
+llega al clonar. Adentro es el mismo script; sirve para repartir un archivo
+suelto a quien no vaya a clonar.
 
 ## Requisitos
 
@@ -131,16 +86,9 @@ problema es exclusivamente el passthrough USB de WSL.
 
 - El ACR122U solo lee **NFC-A**. Una tarjeta NFC-B no la detecta.
 - El UID se teclea en la ventana activa, así que esa ventana debe tener el foco.
-- Si la app corre **como administrador** y el puente no, Windows bloquea las
-  pulsaciones. El puente lo detecta y lo dice; la solución es abrirlo también
-  como administrador.
-- Una tarjeta apoyada se lee una vez; para releerla hay que retirarla y volver a
-  acercarla.
-- Solo acepta UID de 4, 7 o 10 bytes, que son los que define el estándar. Si la
-  tarjeta contesta a medias porque se preguntó demasiado pronto, reintenta medio
-  segundo antes de rendirse; si aun así no sale, avisa en vez de teclear algo
-  inventado.
-- Si se desconecta el lector con el puente corriendo, el script se detiene con un
-  aviso en vez de quedarse esperando en falso.
+- Una tarjeta que se queda apoyada se ignora durante 1,5 s para no producir
+  lecturas repetidas (`REPETICION_MIN_MS`).
+- Sondea cada 250 ms (`PAUSA_SONDEO_MS`), así que hay un retardo de hasta esa
+  cantidad entre apoyar la tarjeta y la lectura.
 - Si hay varios lectores conectados, elige el que tenga `ACR122` o `ACS` en el
   nombre; si no encuentra ninguno, toma el primero de la lista.
