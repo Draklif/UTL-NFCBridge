@@ -105,9 +105,80 @@ $ESPERA_MAX_MS = 500
 $REINTENTOS_LECTURA = 16
 $PAUSA_REINTENTO_MS = 30
 
-if (-not $SinTeclear) {
-    Add-Type -AssemblyName System.Windows.Forms
+# Escribir en la ventana activa.
+#
+# Aqui NO se usa System.Windows.Forms.SendKeys: por dentro se apoya en journal
+# hooks, un mecanismo viejo que Windows puede reinyectar entero si el enganche se
+# interrumpe. El sintoma es el UID repetido y entrelazado consigo mismo
+# (CA8C0943 llegando como CCCAAA88CC00...), y no hay forma de ajustarlo.
+#
+# SendInput es la API con la que el propio Windows entrega las pulsaciones de un
+# teclado real: una sola llamada, todo el UID de una vez, sin reinyeccion. Y en
+# modo unicode manda el caracter tal cual, asi que no depende de la distribucion
+# del teclado (en un teclado AZERTY la A y la Q estan cambiadas de sitio, y con
+# codigos de tecla saldria el UID mal escrito).
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public class Teclado {
+    const uint INPUT_KEYBOARD    = 1;
+    const uint KEYEVENTF_KEYUP   = 0x0002;
+    const uint KEYEVENTF_UNICODE = 0x0004;
+    const ushort VK_RETURN       = 0x0D;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct KEYBDINPUT {
+        public ushort Vk;
+        public ushort Scan;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    // INPUT es una union en C: la variante de raton es mas grande que la de
+    // teclado, y el relleno iguala el tamano que espera Windows.
+    [StructLayout(LayoutKind.Sequential)]
+    struct INPUT {
+        public uint Type;
+        public KEYBDINPUT Tecla;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)]
+        public byte[] Relleno;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern uint SendInput(uint count, INPUT[] inputs, int size);
+
+    static INPUT Pulsacion(ushort vk, char caracter, bool soltar) {
+        INPUT i = new INPUT();
+        i.Type = INPUT_KEYBOARD;
+        i.Relleno = new byte[8];
+        i.Tecla.Vk = vk;
+        i.Tecla.Scan = (ushort)caracter;
+        i.Tecla.Flags = (vk == 0 ? KEYEVENTF_UNICODE : 0) | (soltar ? KEYEVENTF_KEYUP : 0);
+        return i;
+    }
+
+    // Devuelve cuantas pulsaciones acepto Windows; menos de las enviadas
+    // significa que algo las bloqueo.
+    public static uint Escribir(string texto, bool conEnter) {
+        int n = texto.Length * 2 + (conEnter ? 2 : 0);
+        INPUT[] eventos = new INPUT[n];
+
+        int k = 0;
+        foreach (char c in texto) {
+            eventos[k++] = Pulsacion(0, c, false);
+            eventos[k++] = Pulsacion(0, c, true);
+        }
+        if (conEnter) {
+            eventos[k++] = Pulsacion(VK_RETURN, '\0', false);
+            eventos[k++] = Pulsacion(VK_RETURN, '\0', true);
+        }
+
+        return SendInput((uint)n, eventos, Marshal.SizeOf(typeof(INPUT)));
+    }
 }
+"@
 
 # ── Contexto y lector ────────────────────────────────
 $ctx = [IntPtr]::Zero
@@ -249,11 +320,18 @@ try {
 
         Write-Host "Leido: $uid"
 
-        # SendKeys escribe en la ventana que tenga el foco, que es justo lo
-        # que hace un lector HID. El UID es hex, no hay nada que escapar.
+        # Las pulsaciones van a la ventana que tenga el foco, que es justo lo que
+        # hace un lector HID.
         if (-not $SinTeclear) {
-            $pulsaciones = if ($SinEnter) { $uid } else { "$uid{ENTER}" }
-            [System.Windows.Forms.SendKeys]::SendWait($pulsaciones)
+            $esperadas = $uid.Length * 2 + $(if ($SinEnter) { 0 } else { 2 })
+            $aceptadas = [Teclado]::Escribir($uid, (-not $SinEnter))
+
+            # Windows no deja que un programa normal teclee dentro de uno que
+            # corre como administrador. Si la app va elevada, el puente tiene que
+            # ir elevado tambien.
+            if ($aceptadas -lt $esperadas) {
+                Write-Warning "Windows bloqueo las pulsaciones. Si la app corre como administrador, abre el puente como administrador tambien."
+            }
         }
     }
 }

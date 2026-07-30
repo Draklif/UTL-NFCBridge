@@ -68,6 +68,19 @@ vez. Así una misma tarjeta no puede cobrar dos veces por descuido.
 No es un antirrebote por tiempo, sino el estado real del lector: se lee en el
 momento en que la tarjeta entra al campo, y no se vuelve a leer hasta que sale.
 
+## Cómo se teclea
+
+Con `SendInput`, la misma API por la que Windows entrega las pulsaciones de un
+teclado físico, y en modo Unicode: el carácter viaja tal cual, así que no depende
+de la distribución del teclado. En un AZERTY, mandando códigos de tecla, la `A`
+saldría como `Q`.
+
+No se usa `SendKeys` de System.Windows.Forms, aunque sea el camino habitual en
+PowerShell: por dentro se apoya en *journal hooks*, un mecanismo que Windows
+puede reinyectar entero si el enganche se interrumpe. El síntoma es el UID
+llegando repetido y entrelazado consigo mismo (`CA8C0943` → `CCCAAA88CC00…`), sin
+nada que ajustar del lado del script.
+
 ## Velocidad
 
 No hay sondeo. El proceso queda dormido dentro de `SCardGetStatusChange`, la
@@ -118,6 +131,9 @@ problema es exclusivamente el passthrough USB de WSL.
 
 - El ACR122U solo lee **NFC-A**. Una tarjeta NFC-B no la detecta.
 - El UID se teclea en la ventana activa, así que esa ventana debe tener el foco.
+- Si la app corre **como administrador** y el puente no, Windows bloquea las
+  pulsaciones. El puente lo detecta y lo dice; la solución es abrirlo también
+  como administrador.
 - Una tarjeta apoyada se lee una vez; para releerla hay que retirarla y volver a
   acercarla.
 - Solo acepta UID de 4, 7 o 10 bytes, que son los que define el estándar. Si la
