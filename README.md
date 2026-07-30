@@ -120,6 +120,10 @@ problema es exclusivamente el passthrough USB de WSL.
 - El UID se teclea en la ventana activa, así que esa ventana debe tener el foco.
 - Una tarjeta apoyada se lee una vez; para releerla hay que retirarla y volver a
   acercarla.
+- Solo acepta UID de 4, 7 o 10 bytes, que son los que define el estándar. Si la
+  tarjeta contesta a medias porque se preguntó demasiado pronto, reintenta medio
+  segundo antes de rendirse; si aun así no sale, avisa en vez de teclear algo
+  inventado.
 - Si se desconecta el lector con el puente corriendo, el script se detiene con un
   aviso en vez de quedarse esperando en falso.
 - Si hay varios lectores conectados, elige el que tenga `ACR122` o `ACS` en el

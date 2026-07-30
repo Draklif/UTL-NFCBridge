@@ -100,9 +100,10 @@ $SCARD_E_TIMEOUT       = 0x8010000A
 $ESPERA_MAX_MS = 500
 
 # La tarjeta puede tardar un instante en quedar lista despues de que el lector
-# avisa que ya esta encima.
-$REINTENTOS_CONEXION = 10
-$PAUSA_REINTENTO_MS  = 30
+# avisa que ya esta encima: hasta medio segundo insistiendo, que en la practica
+# se resuelve en el primer o segundo intento.
+$REINTENTOS_LECTURA = 16
+$PAUSA_REINTENTO_MS = 30
 
 if (-not $SinTeclear) {
     Add-Type -AssemblyName System.Windows.Forms
@@ -136,23 +137,16 @@ Write-Host $(if ($SinTeclear) {
     "Puente activo. Deja el navegador enfocado y acerca una tarjeta. Ctrl+C para salir."
 })
 
-# Lee el UID de la tarjeta que este encima del lector, o $null si no se pudo.
-function Leer-Uid {
+# Un intento de lectura. Devuelve el UID en hex, o $null si todavia no se puede.
+function Intentar-Leer {
     param([IntPtr]$Contexto, [string]$Lector)
 
     $card = [IntPtr]::Zero
     $proto = 0
 
-    # Justo despues del aviso la tarjeta puede no estar lista todavia.
-    $conectado = $false
-    for ($i = 0; $i -lt $REINTENTOS_CONEXION; $i++) {
-        if ([WinScard]::SCardConnect($Contexto, $Lector, $SCARD_SHARE_SHARED, $SCARD_PROTOCOL_T0T1, [ref]$card, [ref]$proto) -eq $SCARD_S_SUCCESS) {
-            $conectado = $true
-            break
-        }
-        Start-Sleep -Milliseconds $PAUSA_REINTENTO_MS
+    if ([WinScard]::SCardConnect($Contexto, $Lector, $SCARD_SHARE_SHARED, $SCARD_PROTOCOL_T0T1, [ref]$card, [ref]$proto) -ne $SCARD_S_SUCCESS) {
+        return $null
     }
-    if (-not $conectado) { return $null }
 
     try {
         # FF CA 00 00 00: "dame el UID". Es el APDU estandar de PC/SC para
@@ -166,25 +160,42 @@ function Leer-Uid {
         $largo = $respuesta.Length
 
         if ([WinScard]::SCardTransmit($card, [ref]$io, $apdu, $apdu.Length, [IntPtr]::Zero, $respuesta, [ref]$largo) -ne $SCARD_S_SUCCESS) {
-            Write-Warning "Tarjeta detectada pero no respondio al UID"
             return $null
         }
 
+        # Preguntamos apenas la tarjeta entra al campo, asi que a veces alcanza a
+        # contestar "todo bien" sin el UID todavia. Un UID son 4, 7 o 10 bytes,
+        # mas los dos del codigo de estado: menos de 6 en total es una respuesta
+        # incompleta, no una tarjeta rara.
+        if ($largo -lt 6) { return $null }
+
         # Los dos ultimos bytes son el codigo de estado: 90 00 es exito.
-        if ($largo -lt 2 -or $respuesta[$largo - 2] -ne 0x90) {
-            Write-Warning "La tarjeta rechazo la peticion de UID"
+        if ($respuesta[$largo - 2] -ne 0x90 -or $respuesta[$largo - 1] -ne 0x00) {
             return $null
         }
 
         # La app espera hex plano en mayusculas, igual que lo deja Web NFC.
-        $uid = -join ($respuesta[0..($largo - 3)] | ForEach-Object { $_.ToString("X2") })
-        if ($uid.Length -lt 4) { return $null }
-
-        return $uid
+        return -join ($respuesta[0..($largo - 3)] | ForEach-Object { $_.ToString("X2") })
     }
     finally {
         [void][WinScard]::SCardDisconnect($card, $SCARD_LEAVE_CARD)
     }
+}
+
+# Lee el UID de la tarjeta que este encima del lector, o $null si no se pudo.
+# Insiste un poco: entre que Windows avisa que hay tarjeta y que la tarjeta
+# realmente puede contestar pasan unos milisegundos.
+function Leer-Uid {
+    param([IntPtr]$Contexto, [string]$Lector)
+
+    for ($i = 0; $i -lt $REINTENTOS_LECTURA; $i++) {
+        $uid = Intentar-Leer -Contexto $Contexto -Lector $Lector
+        if ($uid) { return $uid }
+        Start-Sleep -Milliseconds $PAUSA_REINTENTO_MS
+    }
+
+    Write-Warning "Tarjeta detectada pero no entrego un UID valido. Retirala y vuelve a acercarla."
+    return $null
 }
 
 # ── Bucle de lectura ─────────────────────────────────
