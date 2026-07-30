@@ -18,6 +18,8 @@
 
     Uso:  .\puente.ps1              teclea el UID en la ventana activa
           .\puente.ps1 -SinTeclear  solo lo muestra en consola (para probar)
+
+    O, para no abrir la consola a mano, doble clic en Puente.bat.
 #>
 
 param(
@@ -53,6 +55,23 @@ public class WinScard {
 
     [DllImport("winscard.dll")]
     public static extern int SCardTransmit(IntPtr card, ref IO_REQUEST send, byte[] sendBuf, int sendLen, IntPtr recv, byte[] recvBuf, ref int recvLen);
+
+    // Windows avisa cuando cambia el estado del lector, en vez de que nosotros
+    // preguntemos cada tanto. Es la diferencia entre reaccionar al instante y
+    // reaccionar cuando toque el siguiente sondeo.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct READERSTATE {
+        public string Reader;
+        public IntPtr UserData;
+        public uint CurrentState;
+        public uint EventState;
+        public uint AtrLength;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 36)]
+        public byte[] Atr;
+    }
+
+    [DllImport("winscard.dll", CharSet = CharSet.Unicode)]
+    public static extern int SCardGetStatusChange(IntPtr ctx, uint timeout, [In, Out] READERSTATE[] states, int count);
 }
 "@
 
@@ -61,9 +80,18 @@ $SCARD_SHARE_SHARED    = 2
 $SCARD_PROTOCOL_T0T1   = 3
 $SCARD_LEAVE_CARD      = 0
 $SCARD_S_SUCCESS       = 0
+$SCARD_STATE_UNAWARE   = 0
+$SCARD_STATE_PRESENT   = 0x20
+$SCARD_E_TIMEOUT       = 0x8010000A
 
-$REPETICION_MIN_MS = 1500  # ignora la relectura de una tarjeta que quedo apoyada
-$PAUSA_SONDEO_MS   = 250   # cada cuanto se pregunta si hay tarjeta encima
+# El bloque de espera no se puede interrumpir con Ctrl+C mientras corre, asi que
+# se corta cada tanto y se vuelve a entrar. Medio segundo no se siente.
+$ESPERA_MAX_MS = 500
+
+# La tarjeta puede tardar un instante en quedar lista despues de que el lector
+# avisa que ya esta encima.
+$REINTENTOS_CONEXION = 10
+$PAUSA_REINTENTO_MS  = 30
 
 if (-not $SinTeclear) {
     Add-Type -AssemblyName System.Windows.Forms
@@ -97,64 +125,110 @@ Write-Host $(if ($SinTeclear) {
     "Puente activo. Deja el navegador enfocado y acerca una tarjeta. Ctrl+C para salir."
 })
 
+# Lee el UID de la tarjeta que este encima del lector, o $null si no se pudo.
+function Leer-Uid {
+    param([IntPtr]$Contexto, [string]$Lector)
+
+    $card = [IntPtr]::Zero
+    $proto = 0
+
+    # Justo despues del aviso la tarjeta puede no estar lista todavia.
+    $conectado = $false
+    for ($i = 0; $i -lt $REINTENTOS_CONEXION; $i++) {
+        if ([WinScard]::SCardConnect($Contexto, $Lector, $SCARD_SHARE_SHARED, $SCARD_PROTOCOL_T0T1, [ref]$card, [ref]$proto) -eq $SCARD_S_SUCCESS) {
+            $conectado = $true
+            break
+        }
+        Start-Sleep -Milliseconds $PAUSA_REINTENTO_MS
+    }
+    if (-not $conectado) { return $null }
+
+    try {
+        # FF CA 00 00 00: "dame el UID". Es el APDU estandar de PC/SC para
+        # tarjetas sin contacto, el mismo que usan los lectores HID.
+        $io = New-Object WinScard+IO_REQUEST
+        $io.Protocol = $proto
+        $io.PciLength = 8
+
+        $apdu = [byte[]](0xFF, 0xCA, 0x00, 0x00, 0x00)
+        $respuesta = New-Object byte[] 258
+        $largo = $respuesta.Length
+
+        if ([WinScard]::SCardTransmit($card, [ref]$io, $apdu, $apdu.Length, [IntPtr]::Zero, $respuesta, [ref]$largo) -ne $SCARD_S_SUCCESS) {
+            Write-Warning "Tarjeta detectada pero no respondio al UID"
+            return $null
+        }
+
+        # Los dos ultimos bytes son el codigo de estado: 90 00 es exito.
+        if ($largo -lt 2 -or $respuesta[$largo - 2] -ne 0x90) {
+            Write-Warning "La tarjeta rechazo la peticion de UID"
+            return $null
+        }
+
+        # La app espera hex plano en mayusculas, igual que lo deja Web NFC.
+        $uid = -join ($respuesta[0..($largo - 3)] | ForEach-Object { $_.ToString("X2") })
+        if ($uid.Length -lt 4) { return $null }
+
+        return $uid
+    }
+    finally {
+        [void][WinScard]::SCardDisconnect($card, $SCARD_LEAVE_CARD)
+    }
+}
+
 # ── Bucle de lectura ─────────────────────────────────
-$ultimoUid = ""
-$ultimoMs = 0
+# Una lectura por tarjeta apoyada: se lee al detectar que entra, y no se vuelve
+# a leer hasta que se retire y se acerque de nuevo. Sin esto la app cobraria dos
+# veces por un solo pasajero.
+
+# READERSTATE es un struct, y PowerShell entrega una copia al indexar el array:
+# escribirle campos ahi dentro no llega al original. Hay que armarlo aparte y
+# meterlo entero, y lo mismo al actualizarlo mas abajo.
+$st = New-Object WinScard+READERSTATE
+$st.Reader = $lector
+$st.CurrentState = $SCARD_STATE_UNAWARE
+$st.Atr = New-Object byte[] 36
+
+$estado = [WinScard+READERSTATE[]]@($st)
+
+$tarjetaPresente = $false
 
 try {
     while ($true) {
-        Start-Sleep -Milliseconds $PAUSA_SONDEO_MS
+        # Aqui el proceso queda dormido hasta que algo cambia en el lector: no
+        # gasta CPU y reacciona en cuanto la tarjeta toca la antena.
+        $r = [WinScard]::SCardGetStatusChange($ctx, $ESPERA_MAX_MS, $estado, 1)
 
-        $card = [IntPtr]::Zero
-        $proto = 0
-        # Sin tarjeta encima esto falla, que es la forma normal de esperar.
-        if ([WinScard]::SCardConnect($ctx, $lector, $SCARD_SHARE_SHARED, $SCARD_PROTOCOL_T0T1, [ref]$card, [ref]$proto) -ne $SCARD_S_SUCCESS) {
+        if ($r -eq $SCARD_E_TIMEOUT) { continue }
+        if ($r -ne $SCARD_S_SUCCESS) {
+            throw "Se perdio el lector. Revisa que el ACR122U siga conectado."
+        }
+
+        # Lo que Windows reporta ahora es el punto de partida de la proxima espera.
+        $st = $estado[0]
+        $st.CurrentState = $st.EventState
+        $estado[0] = $st
+
+        $hayTarjeta = ($st.EventState -band $SCARD_STATE_PRESENT) -ne 0
+
+        if (-not $hayTarjeta) {
+            $tarjetaPresente = $false
             continue
         }
 
-        try {
-            # FF CA 00 00 00: "dame el UID". Es el APDU estandar de PC/SC para
-            # tarjetas sin contacto, el mismo que usan los lectores HID.
-            $io = New-Object WinScard+IO_REQUEST
-            $io.Protocol = $proto
-            $io.PciLength = 8
+        # Sigue siendo la misma tarjeta apoyada desde antes: ya se leyo.
+        if ($tarjetaPresente) { continue }
+        $tarjetaPresente = $true
 
-            $apdu = [byte[]](0xFF, 0xCA, 0x00, 0x00, 0x00)
-            $respuesta = New-Object byte[] 258
-            $largo = $respuesta.Length
+        $uid = Leer-Uid -Contexto $ctx -Lector $lector
+        if (-not $uid) { continue }
 
-            if ([WinScard]::SCardTransmit($card, [ref]$io, $apdu, $apdu.Length, [IntPtr]::Zero, $respuesta, [ref]$largo) -ne $SCARD_S_SUCCESS) {
-                Write-Warning "Tarjeta detectada pero no respondio al UID"
-                continue
-            }
+        Write-Host "Leido: $uid"
 
-            # Los dos ultimos bytes son el codigo de estado: 90 00 es exito.
-            if ($largo -lt 2 -or $respuesta[$largo - 2] -ne 0x90) {
-                Write-Warning "La tarjeta rechazo la peticion de UID"
-                continue
-            }
-
-            # La app espera hex plano en mayusculas, igual que lo deja Web NFC.
-            $uid = -join ($respuesta[0..($largo - 3)] | ForEach-Object { $_.ToString("X2") })
-            if ($uid.Length -lt 4) { continue }
-
-            # Una tarjeta que se queda apoyada se vuelve a leer sola; sin esto la
-            # app cobraria dos veces por un solo pasajero.
-            $ahora = [Environment]::TickCount
-            if ($uid -eq $ultimoUid -and ($ahora - $ultimoMs) -lt $REPETICION_MIN_MS) { continue }
-            $ultimoUid = $uid
-            $ultimoMs = $ahora
-
-            Write-Host "Leido: $uid"
-
-            # SendKeys escribe en la ventana que tenga el foco, que es justo lo
-            # que hace un lector HID. El UID es hex, no hay nada que escapar.
-            if (-not $SinTeclear) {
-                [System.Windows.Forms.SendKeys]::SendWait("$uid{ENTER}")
-            }
-        }
-        finally {
-            [void][WinScard]::SCardDisconnect($card, $SCARD_LEAVE_CARD)
+        # SendKeys escribe en la ventana que tenga el foco, que es justo lo
+        # que hace un lector HID. El UID es hex, no hay nada que escapar.
+        if (-not $SinTeclear) {
+            [System.Windows.Forms.SendKeys]::SendWait("$uid{ENTER}")
         }
     }
 }

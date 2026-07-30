@@ -1,3 +1,7 @@
+# Se genera con construir-exe.ps1; no se versiona porque es un binario y los
+# antivirus lo miran mal al clonar.
+Puente.exe
+
 # Copias de trabajo en Windows
 *.log
 Thumbs.db

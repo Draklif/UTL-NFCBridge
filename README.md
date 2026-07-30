@@ -20,25 +20,60 @@ de formulario, una hoja de cálculo o el Bloc de notas.
 
 ## Uso
 
+Doble clic en **`Puente.bat`**. Eso es todo: no hay que abrir la consola ni pelear
+con la política de ejecución, porque el `.bat` la esquiva solo para ese proceso
+(no cambia ninguna configuración del PC).
+
+**`Puente (prueba).bat`** hace lo mismo pero sin teclear: solo muestra los UID en
+pantalla. Empieza siempre por ahí — si el UID no aparece, el problema está en el
+lector y no en la app que lo recibe.
+
+Desde PowerShell, si lo prefieres:
+
 ```powershell
 .\puente.ps1 -SinTeclear     # muestra los UID en consola, no teclea nada
 .\puente.ps1                 # el modo real
 ```
 
-Si PowerShell bloquea el script por política de ejecución:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File puente.ps1
-```
-
 Con el puente corriendo, deja **enfocada** la ventana donde quieres que aparezca
 el UID y acerca la tarjeta.
 
-Empieza siempre por `-SinTeclear`. Si ahí no aparece el UID, el problema está en
-el lector y no en la app que lo recibe.
-
 El UID sale en hex plano y mayúsculas (`04A1B2C3`), el mismo formato que entrega
 Web NFC en Android una vez se le quitan los dos puntos.
+
+## Una lectura por tarjeta
+
+El puente lee **una sola vez** cada vez que se acerca una tarjeta. Si se queda
+apoyada sobre el lector no vuelve a leerla: hay que retirarla y acercarla otra
+vez. Así una misma tarjeta no puede cobrar dos veces por descuido.
+
+No es un antirrebote por tiempo, sino el estado real del lector: se lee en el
+momento en que la tarjeta entra al campo, y no se vuelve a leer hasta que sale.
+
+## Velocidad
+
+No hay sondeo. El proceso queda dormido dentro de `SCardGetStatusChange`, la
+función con la que Windows avisa cuando algo cambia en el lector, y despierta en
+el instante en que la tarjeta toca la antena. El retardo es el del lector, no el
+del script — y mientras espera no consume CPU.
+
+## Un .exe, si lo quieres
+
+`Puente.bat` ya se abre con doble clic, así que el `.exe` no hace falta. Si de
+todos modos prefieres repartir un archivo suelto, sin el `.ps1` al lado:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File construir-exe.ps1
+```
+
+Instala [ps2exe](https://github.com/MScholtes/PS2EXE) para tu usuario (sin
+administrador) y deja `Puente.exe` en la carpeta. Dos advertencias: adentro sigue
+siendo el mismo script —no compila nada, no es más rápido— y **los antivirus
+desconfían de los ejecutables de ps2exe**, porque el malware usa la misma técnica
+para esconder scripts. Si Defender lo borra, reparte el `.bat`.
+
+Por eso `Puente.exe` no está versionado: para los estudiantes, clonar el repo y
+hacer doble clic en `Puente.bat` es el camino que no falla.
 
 ## Requisitos
 
@@ -72,9 +107,9 @@ problema es exclusivamente el passthrough USB de WSL.
 
 - El ACR122U solo lee **NFC-A**. Una tarjeta NFC-B no la detecta.
 - El UID se teclea en la ventana activa, así que esa ventana debe tener el foco.
-- Una tarjeta que se queda apoyada se ignora durante 1,5 s para no producir
-  lecturas repetidas (`REPETICION_MIN_MS`).
-- Sondea cada 250 ms (`PAUSA_SONDEO_MS`), así que hay un retardo de hasta esa
-  cantidad entre apoyar la tarjeta y la lectura.
+- Una tarjeta apoyada se lee una vez; para releerla hay que retirarla y volver a
+  acercarla.
+- Si se desconecta el lector con el puente corriendo, el script se detiene con un
+  aviso en vez de quedarse esperando en falso.
 - Si hay varios lectores conectados, elige el que tenga `ACR122` o `ACS` en el
   nombre; si no encuentra ninguno, toma el primero de la lista.
